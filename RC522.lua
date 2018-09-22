@@ -9,42 +9,42 @@
 -- to be used with MFRC522 RFID reader and s50 tag (but can work with other tags)
 
 
-pin_rst = 3                 -- Enable/reset pin
-pin_ss = 4                  -- SS (marked as SDA) pin
+local pin_rst = 3                 -- Enable/reset pin
+local pin_ss = 4                  -- SS (marked as SDA) pin
 
-mode_idle = 0x00
-mode_auth = 0x0E
-mode_receive = 0x08
-mode_transmit = 0x04
-mode_transrec = 0x0C
-mode_reset = 0x0F
-mode_crc = 0x03
+local mode_idle = 0x00
+local mode_auth = 0x0E
+local mode_receive = 0x08
+local mode_transmit = 0x04
+local mode_transrec = 0x0C
+local mode_reset = 0x0F
+local mode_crc = 0x03
 
-auth_a = 0x60
-auth_b = 0x61
+local auth_a = 0x60
+local auth_b = 0x61
 
-act_read = 0x30
-act_write = 0xA0
-act_increment = 0xC1
-act_decrement = 0xC0
-act_restore = 0xC2
-act_transfer = 0xB0
+local act_read = 0x30
+local act_write = 0xA0
+local act_increment = 0xC1
+local act_decrement = 0xC0
+local act_restore = 0xC2
+local act_transfer = 0xB0
 
-act_reqidl = 0x26
-act_reqall = 0x52
-act_anticl = 0x93
-act_select = 0x93
-act_end = 0x50
+local act_reqidl = 0x26
+local act_reqall = 0x52
+local act_anticl = 0x93
+local act_select = 0x93
+local act_end = 0x50
 
-reg_tx_control = 0x14
-length = 16
-num_write = 0
+local reg_tx_control = 0x14
+local length = 16
+local num_write = 0
 
-authed = false
+local authed = false
 
-keyA = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF }      --  this is the usual default key (but may not always be)
+local keyA = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF }      --  this is the usual default key (but may not always be)
 
-RC522 = {}
+local RC522 = {}
 RC522.__index = RC522
 
 
@@ -405,87 +405,91 @@ end
 
 
 
-----------------------------------------------------------------------
--- Main
-----------------------------------------------------------------------
+local init = function(pin)
+  pin_ss = pin
+  spi.setup(1, spi.MASTER, spi.CPOL_LOW, spi.CPHA_LOW, spi.DATABITS_8, 0)
+  gpio.mode(pin_rst,gpio.OUTPUT)
+  gpio.mode(pin_ss,gpio.OUTPUT)
+  gpio.write(pin_rst, gpio.HIGH)      -- needs to be HIGH all the time for the RC522 to work
+  gpio.write(pin_ss, gpio.HIGH)       -- needs to go LOW during communications
+  RC522.dev_write(0x01, mode_reset)   -- soft reset
+  RC522.dev_write(0x2A, 0x8D)         -- Timer: auto; preScaler to 6.78MHz
+  RC522.dev_write(0x2B, 0x3E)         -- Timer
+  RC522.dev_write(0x2D, 30)           -- Timer
+  RC522.dev_write(0x2C, 0)            -- Timer
+  RC522.dev_write(0x15, 0x40)         -- 100% ASK
+  RC522.dev_write(0x11, 0x3D)         -- CRC initial value 0x6363
 
--- Initialise the RC522
-spi.setup(1, spi.MASTER, spi.CPOL_LOW, spi.CPHA_LOW, spi.DATABITS_8, 0)
-gpio.mode(pin_rst,gpio.OUTPUT)
-gpio.mode(pin_ss,gpio.OUTPUT)
-gpio.write(pin_rst, gpio.HIGH)      -- needs to be HIGH all the time for the RC522 to work
-gpio.write(pin_ss, gpio.HIGH)       -- needs to go LOW during communications
-RC522.dev_write(0x01, mode_reset)   -- soft reset
-RC522.dev_write(0x2A, 0x8D)         -- Timer: auto; preScaler to 6.78MHz
-RC522.dev_write(0x2B, 0x3E)         -- Timer
-RC522.dev_write(0x2D, 30)           -- Timer
-RC522.dev_write(0x2C, 0)            -- Timer
-RC522.dev_write(0x15, 0x40)         -- 100% ASK
-RC522.dev_write(0x11, 0x3D)         -- CRC initial value 0x6363
--- turn on the antenna
-current = RC522.dev_read(reg_tx_control)
-if bit.bnot(bit.band(current, 0x03)) then
-  RC522.set_bitmask(reg_tx_control, 0x03)
+  -- turn on the antenna
+  current = RC522.dev_read(reg_tx_control)
+  if bit.bnot(bit.band(current, 0x03)) then
+    RC522.set_bitmask(reg_tx_control, 0x03)
+  end
+  print("RC522 Firmware Version: 0x"..string.format("%X", RC522.getFirmwareVersion()))
 end
 
-print("RC522 Firmware Version: 0x"..string.format("%X", RC522.getFirmwareVersion()))
 
-tmr.alarm(0, 100, tmr.ALARM_AUTO, function()
+local poll = function(pin)
+  pin_ss = pin
+  isTagNear, cardType = RC522.request()
 
-    isTagNear, cardType = RC522.request()
+  if isTagNear == true then
+    tmr.stop(0)
+    err, serialNo = RC522.anticoll()
+    print("Tag Found: "..appendHex(serialNo).."  of type: "..appendHex(cardType))
 
-    if isTagNear == true then
-      tmr.stop(0)
-      err, serialNo = RC522.anticoll()
-      print("Tag Found: "..appendHex(serialNo).."  of type: "..appendHex(cardType))
+    -- Selecting a tag, and the rest afterwards is only required if you want to read or write data to the card
 
-      -- Selecting a tag, and the rest afterwards is only required if you want to read or write data to the card
-
-      err, sak = RC522.select_tag(serialNo)
-      if err == false then
-        print("Tag selected successfully.  SAK: 0x"..string.format("%X", sak))
+    err, sak = RC522.select_tag(serialNo)
+    if err == false then
+      print("Tag selected successfully.  SAK: 0x"..string.format("%X", sak))
 
 
-        for i = 0,63 do
-          err = RC522.card_auth(auth_a, i, keyA, serialNo)     --  Auth the "A" key.  If this fails you can also auth the "B" key
-          if err then
-            print("ERROR Authenticating block "..i)
-          else
+      for i = 0,63 do
+        err = RC522.card_auth(auth_a, i, keyA, serialNo)     --  Auth the "A" key.  If this fails you can also auth the "B" key
+        if err then
+          print("ERROR Authenticating block "..i)
+        else
 
-            -- Write data to card
-            if (i == 2) then   -- write to block 2
-              err = RC522.writeTag(i, { 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 })
-              if err then print("ERROR Writing to the Tag") end
-            end
+          -- Write data to card
+          if (i == 2) then   -- write to block 2
+            err = RC522.writeTag(i, { 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 })
+            if err then print("ERROR Writing to the Tag") end
+          end
 
-            -- Read card data
-            if not (i % 4 == 3) then   --  Don't bother to read the Sector Trailers
-              err, tagData = RC522.readTag(i)
-              if not err then print("READ Block "..i..": "..appendHex(tagData)) end
-            end
+          -- Read card data
+          if not (i % 4 == 3) then   --  Don't bother to read the Sector Trailers
+            err, tagData = RC522.readTag(i)
+            if not err then print("READ Block "..i..": "..appendHex(tagData)) end
           end
         end
-
-
-      else
-        print("ERROR Selecting tag")
-
       end
-      print(" ")
 
-      -- halt tag and get ready to read another.
-      buf = {}
-      buf[1] = 0x50  --MF1_HALT
-      buf[2] = 0
-      crc = RC522.calculate_crc(buf)
-      table.insert(buf, crc[1])
-      table.insert(buf, crc[2])
-      err, back_data, back_length = RC522.card_write(mode_transrec, buf)
-      RC522.clear_bitmask(0x08, 0x08)    -- Turn off encryption
-
-      tmr.start(0)
 
     else
-    --print("NO TAG FOUND")
+      print("ERROR Selecting tag")
+
     end
-end)  -- timer
+    print(" ")
+
+    -- halt tag and get ready to read another.
+    buf = {}
+    buf[1] = 0x50  --MF1_HALT
+    buf[2] = 0
+    crc = RC522.calculate_crc(buf)
+    table.insert(buf, crc[1])
+    table.insert(buf, crc[2])
+    err, back_data, back_length = RC522.card_write(mode_transrec, buf)
+    RC522.clear_bitmask(0x08, 0x08)    -- Turn off encryption
+
+    return appendHex(serialNo)
+
+  else
+  --print("NO TAG FOUND")
+  end
+end
+
+return {
+  poll = poll,
+  init = init
+}
